@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # -------------------------------------------------------------------------
   # API service
@@ -8,6 +6,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HF_MODEL_NAME: ${NER_MODEL_NAME:-Davlan/xlm-roberta-base-ner-hrl}
+        PRELOAD_HF_MODEL: ${PRELOAD_HF_MODEL:-true}
     container_name: sms-identifier-api
     image: sms-identifier-service:latest
     restart: unless-stopped
@@ -34,6 +35,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        HF_MODEL_NAME: ${NER_MODEL_NAME:-Davlan/xlm-roberta-base-ner-hrl}
+        PRELOAD_HF_MODEL: ${PRELOAD_HF_MODEL:-true}
     container_name: sms-identifier-worker
     image: sms-identifier-service:latest
     restart: unless-stopped
