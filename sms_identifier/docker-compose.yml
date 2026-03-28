@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  # -------------------------------------------------------------------------
+  # API service
+  # -------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sms-identifier-api
+    image: sms-identifier-service:latest
+    restart: unless-stopped
+    ports:
+      - "8117:8117"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8117"]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8117/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # -------------------------------------------------------------------------
+  # Worker service
+  # -------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sms-identifier-worker
+    image: sms-identifier-service:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "worker.run_worker"]
+    depends_on:
+      - api
