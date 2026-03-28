@@ -43,6 +43,10 @@ ORG_SCORE_THRESHOLD = float(os.getenv("ORG_SCORE_THRESHOLD", "0.80"))
 # very short false-positive NER hits like "I" or single-digit tokens)
 MIN_ENTITY_LENGTH = int(os.getenv("MIN_ENTITY_LENGTH", "3"))
 
+# Temporary request-tracking records are kept for a short time so clients can
+# poll for results after async processing completes.
+REQUEST_TTL_HOURS = int(os.getenv("REQUEST_TTL_HOURS", "6"))
+
 
 def ensure_directories() -> None:
     """Create all required runtime directories if they do not exist."""

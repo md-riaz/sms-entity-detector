@@ -4,6 +4,7 @@ FastAPI application entry point.
 Routes:
   POST /api/v1/sms/ingest
   POST /api/v1/sms/check
+  GET  /api/v1/request/{request_id}
   GET  /api/v1/template/{template_hash}
   GET  /api/v1/health
   GET  /api/v1/stats
@@ -24,10 +25,12 @@ from app.config import APP_LOG_FILE, LOG_DIR, ensure_directories
 from app.schemas import (
     CacheRecord,
     CheckRequest,
+    CheckSubmitResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
     MessageResult,
+    RequestStatusResponse,
     StatsResponse,
     WorkerRunOnceResponse,
 )
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     setup_logging()
     ensure_directories()
     db.init_db()
+    db.request_cleanup_expired()
     # Recover any leftover processing file from a previous crash
     queue_manager.recover_processing_file()
     # Do NOT preload the ML model in the API process.
@@ -118,17 +122,24 @@ def ingest(request: IngestRequest):
     return IngestResponse(processed=len(results), results=results)
 
 
-@app.post("/api/v1/sms/check", response_model=MessageResult)
+@app.post("/api/v1/sms/check", response_model=CheckSubmitResponse)
 def check(body: CheckRequest = Body(...)):
     """
-    Check a single SMS message for sender identity.
-    Returns cached result if available, otherwise queues and returns PENDING.
-
-    Body: { "message": "<raw sms text>" }
+    Submit a single SMS check request.
+    Returns a request_id that can be polled via /api/v1/request/{request_id}.
     """
     if not body.message:
         raise HTTPException(status_code=422, detail="Field 'message' is required")
     return services.check_sms(body.message)
+
+
+@app.get("/api/v1/request/{request_id}", response_model=RequestStatusResponse)
+def get_request(request_id: str):
+    """Return async request status/result by request_id."""
+    request = services.get_request_status(request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found or expired")
+    return request
 
 
 @app.get("/api/v1/template/{template_hash}", response_model=CacheRecord)

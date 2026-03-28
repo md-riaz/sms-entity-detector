@@ -222,6 +222,7 @@ queue files, and logs persist across restarts.
 | `MODEL_ENABLED` | `true` | Set `false` for rule-only mode |
 | `ORG_SCORE_THRESHOLD` | `0.80` | Minimum NER confidence for PASS |
 | `MIN_ENTITY_LENGTH` | `3` | Minimum entity name length |
+| `REQUEST_TTL_HOURS` | `6` | Keep completed request-tracking rows for this many hours |
 
 ---
 
@@ -291,23 +292,20 @@ curl -X POST http://localhost:8117/api/v1/sms/ingest \
 
 ### POST `/api/v1/sms/check`
 
-Check a single SMS immediately.
+Submit a single SMS for asynchronous classification.
 
 **Request:**
 ```json
 { "message": "bKash OTP is 123456" }
 ```
 
-**Response (cached):**
+**Response:**
 ```json
 {
-  "original_text": "bKash OTP is 123456",
-  "template_text": "bKash OTP is {NUM}",
+  "request_id": "req_abc123...",
   "template_hash": "b2e9...",
-  "status": "cached",
-  "result": "PASS",
-  "confidence": 0.92,
-  "source": "model"
+  "status": "queued",
+  "expires_at": "2026-03-28 10:43:23"
 }
 ```
 
@@ -317,6 +315,37 @@ curl -X POST http://localhost:8117/api/v1/sms/check \
   -H "Content-Type: application/json" \
   -d '{"message": "bKash OTP is 123456"}'
 ```
+
+---
+
+### GET `/api/v1/request/{request_id}`
+
+Poll the status/result of a previously submitted check request.
+
+**Response (completed):**
+```json
+{
+  "request_id": "req_abc123...",
+  "status": "completed",
+  "original_text": "bKash OTP is 123456",
+  "template_text": "bKash OTP is {NUM}",
+  "template_hash": "b2e9...",
+  "result": "PASS",
+  "confidence": 0.92,
+  "source": "model",
+  "created_at": "2026-03-28 04:43:23",
+  "completed_at": "2026-03-28 04:43:25",
+  "expires_at": "2026-03-28 10:43:23"
+}
+```
+
+**cURL:**
+```bash
+curl http://localhost:8117/api/v1/request/req_abc123...
+```
+
+Completed request rows are cleaned up automatically after `REQUEST_TTL_HOURS`.
+Template cache entries remain available separately for deduplicated lookups.
 
 ---
 

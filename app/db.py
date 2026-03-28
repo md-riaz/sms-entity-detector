@@ -8,8 +8,9 @@ import logging
 import sqlite3
 from contextlib import contextmanager
 from typing import Generator
+import uuid
 
-from app.config import DB_PATH, ensure_directories
+from app.config import DB_PATH, REQUEST_TTL_HOURS, ensure_directories
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,20 @@ CREATE TABLE IF NOT EXISTS classification_audit (
     confidence     REAL,
     source         TEXT NOT NULL,
     processed_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS request_tracking (
+    request_id     TEXT PRIMARY KEY,
+    original_text  TEXT NOT NULL,
+    template_text  TEXT NOT NULL,
+    template_hash  TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    result         TEXT,
+    confidence     REAL,
+    source         TEXT,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at   DATETIME,
+    expires_at     DATETIME NOT NULL
 );
 """
 
@@ -210,3 +225,94 @@ def audit_log(
             """,
             (template_hash, template_text, result, confidence, source),
         )
+
+
+# ---------------------------------------------------------------------------
+# request_tracking helpers
+# ---------------------------------------------------------------------------
+
+def request_create(
+    original_text: str,
+    template_text: str,
+    template_hash: str,
+    status: str,
+) -> dict:
+    request_id = f"req_{uuid.uuid4().hex}"
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO request_tracking
+                (request_id, original_text, template_text, template_hash, status, expires_at)
+            VALUES (?, ?, ?, ?, ?, DATETIME(CURRENT_TIMESTAMP, '+' || ? || ' hours'))
+            """,
+            (request_id, original_text, template_text, template_hash, status, REQUEST_TTL_HOURS),
+        )
+        cur.execute(
+            "SELECT * FROM request_tracking WHERE request_id = ?",
+            (request_id,),
+        )
+        row = cur.fetchone()
+    return dict(row)
+
+
+def request_get(request_id: str) -> dict | None:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM request_tracking WHERE request_id = ?",
+            (request_id,),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def request_complete(
+    request_id: str,
+    result: str,
+    source: str,
+    confidence: float | None = None,
+) -> None:
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE request_tracking
+            SET status = 'completed',
+                result = ?,
+                source = ?,
+                confidence = ?,
+                completed_at = CURRENT_TIMESTAMP
+            WHERE request_id = ?
+            """,
+            (result, source, confidence, request_id),
+        )
+
+
+def request_complete_by_template_hash(
+    template_hash: str,
+    result: str,
+    source: str,
+    confidence: float | None = None,
+) -> None:
+    with db_cursor() as cur:
+        cur.execute(
+            """
+            UPDATE request_tracking
+            SET status = 'completed',
+                result = ?,
+                source = ?,
+                confidence = ?,
+                completed_at = CURRENT_TIMESTAMP
+            WHERE template_hash = ? AND status != 'completed'
+            """,
+            (result, source, confidence, template_hash),
+        )
+
+
+def request_cleanup_expired() -> int:
+    with db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM request_tracking WHERE expires_at < CURRENT_TIMESTAMP"
+        )
+        deleted = cur.rowcount or 0
+    if deleted:
+        logger.info("Cleaned up %d expired request_tracking rows", deleted)
+    return deleted

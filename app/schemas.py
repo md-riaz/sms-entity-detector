@@ -33,6 +33,27 @@ class CheckRequest(BaseModel):
     )
 
 
+class CheckSubmitResponse(BaseModel):
+    request_id: str
+    template_hash: str
+    status: str
+    expires_at: str
+
+
+class RequestStatusResponse(BaseModel):
+    request_id: str
+    status: str
+    original_text: str
+    template_text: str
+    template_hash: str
+    result: Optional[str] = None
+    confidence: Optional[float] = None
+    source: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+    expires_at: str
+
+
 class MessageResult(BaseModel):
     original_text: str
     template_text: str

@@ -10,7 +10,7 @@ from typing import Optional
 
 from app import db, normalization, rules, classifier, queue_manager
 from app.models import write_result_log
-from app.schemas import MessageResult
+from app.schemas import CheckSubmitResponse, MessageResult, RequestStatusResponse
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +69,71 @@ def ingest_sms(messages: list[str]) -> list[MessageResult]:
     return [_process_single_message(m) for m in messages]
 
 
-def check_sms(raw_text: str) -> MessageResult:
+def check_sms(raw_text: str) -> CheckSubmitResponse:
     """
-    Check a single SMS message.
-    Returns cached result if available; otherwise enqueues and returns PENDING.
+    Submit a single SMS check request.
+    Returns a request_id and polling status.
     """
-    return _process_single_message(raw_text)
+    template_text = normalization.normalize(raw_text)
+    template_hash = normalization.compute_hash(template_text)
+
+    cached = db.cache_get(template_hash)
+    if cached:
+        request = db.request_create(raw_text, template_text, template_hash, "completed")
+        db.request_complete(
+            request["request_id"],
+            cached["result"],
+            cached["source"],
+            cached["confidence"],
+        )
+        request = db.request_get(request["request_id"])
+        assert request is not None
+        return CheckSubmitResponse(
+            request_id=request["request_id"],
+            template_hash=template_hash,
+            status=request["status"],
+            expires_at=request["expires_at"],
+        )
+
+    newly_registered = db.queue_registry_add(template_hash, template_text)
+    if newly_registered:
+        queue_manager.enqueue(template_hash, template_text)
+        logger.info("Queue append  hash=%s", template_hash)
+    else:
+        logger.info("Duplicate queue skip  hash=%s", template_hash)
+
+    request = db.request_create(
+        raw_text,
+        template_text,
+        template_hash,
+        "queued" if newly_registered else "pending",
+    )
+    return CheckSubmitResponse(
+        request_id=request["request_id"],
+        template_hash=template_hash,
+        status=request["status"],
+        expires_at=request["expires_at"],
+    )
+
+
+def get_request_status(request_id: str) -> RequestStatusResponse | None:
+    request = db.request_get(request_id)
+    if not request:
+        return None
+
+    return RequestStatusResponse(
+        request_id=request["request_id"],
+        status=request["status"],
+        original_text=request["original_text"],
+        template_text=request["template_text"],
+        template_hash=request["template_hash"],
+        result=request["result"],
+        confidence=request["confidence"],
+        source=request["source"],
+        created_at=request["created_at"],
+        completed_at=request["completed_at"],
+        expires_at=request["expires_at"],
+    )
 
 
 # ---------------------------------------------------------------------------

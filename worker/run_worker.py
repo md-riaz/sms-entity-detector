@@ -61,6 +61,12 @@ def process_batch() -> tuple[int, int, int, int]:
         cached = db.cache_get(template_hash)
         if cached:
             logger.info("Worker cache hit (skip)  hash=%s", template_hash)
+            db.request_complete_by_template_hash(
+                template_hash,
+                cached["result"],
+                cached["source"],
+                cached["confidence"],
+            )
             db.queue_registry_remove(template_hash)
             continue
 
@@ -79,6 +85,7 @@ def process_batch() -> tuple[int, int, int, int]:
         db.cache_set(template_hash, template_text, result, "rule", confidence)
         db.audit_log(template_hash, template_text, result, "rule", confidence)
         write_result_log(template_hash, template_text, result, "rule", confidence)
+        db.request_complete_by_template_hash(template_hash, result, "rule", confidence)
         db.queue_registry_remove(template_hash)
         logger.info(
             "Rule decision  hash=%s  result=%s  confidence=%s",
@@ -104,6 +111,7 @@ def process_batch() -> tuple[int, int, int, int]:
             db.cache_set(template_hash, template_text, result, "model", confidence)
             db.audit_log(template_hash, template_text, result, "model", confidence)
             write_result_log(template_hash, template_text, result, "model", confidence)
+            db.request_complete_by_template_hash(template_hash, result, "model", confidence)
             db.queue_registry_remove(template_hash)
             logger.info(
                 "Model decision  hash=%s  result=%s  confidence=%s",
@@ -130,6 +138,7 @@ def run_loop() -> None:
                 WORKER_BATCH_SIZE, WORKER_SLEEP_SECONDS)
     while True:
         try:
+            db.request_cleanup_expired()
             _, processed, _, _ = process_batch()
             if processed == 0:
                 time.sleep(WORKER_SLEEP_SECONDS)
@@ -162,6 +171,7 @@ if __name__ == "__main__":
     _setup_worker_logging()
     ensure_directories()
     db.init_db()
+    db.request_cleanup_expired()
     queue_manager.recover_processing_file()
     # Do NOT preload the model here either.
     # It will lazy-load only if a batch actually contains undecided items.
