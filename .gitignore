@@ -19,9 +19,9 @@ ENV/
 .env
 
 # Data directory (runtime files – do not commit)
-sms_identifier/data/sqlite/
-sms_identifier/data/queue/*.jsonl
-sms_identifier/data/logs/
+data/sqlite/
+data/queue/*.jsonl
+data/logs/
 
 # Test artifacts
 .pytest_cache/
