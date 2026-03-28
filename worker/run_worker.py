@@ -163,7 +163,8 @@ if __name__ == "__main__":
     ensure_directories()
     db.init_db()
     queue_manager.recover_processing_file()
-    classifier.load_model()
+    # Do NOT preload the model here either.
+    # It will lazy-load only if a batch actually contains undecided items.
 
     if "--once" in sys.argv:
         logger.info("Worker running one batch (--once mode)")

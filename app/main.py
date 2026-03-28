@@ -84,8 +84,9 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
     db.init_db()
     # Recover any leftover processing file from a previous crash
     queue_manager.recover_processing_file()
-    # Pre-load ML model (non-blocking: failure is reported in /health)
-    classifier.load_model()
+    # Do NOT preload the ML model in the API process.
+    # Model startup is expensive and the API should become healthy fast.
+    # The worker / classifier path will lazy-load it only when actually needed.
     logger.info("SMS Identifier API started on port configured in config.py")
     yield
     logger.info("SMS Identifier API shutting down")
