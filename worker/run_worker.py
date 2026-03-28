@@ -32,6 +32,24 @@ logger = logging.getLogger(__name__)
 # Core batch processor (reusable by both worker loop and API run-once)
 # ---------------------------------------------------------------------------
 
+def _extract_rule_entity(template_text: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """
+    Try to extract a sender-like entity from template_text for rule-based decisions.
+    Returns (entity, label, score) or (None, None, None).
+    """
+    import re
+    patterns = [
+        r'for\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+OTP',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+Platform',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, template_text)
+        if match:
+            return match.group(1), "ORG", 0.75
+    return None, None, None
+
+
 def process_batch() -> tuple[int, int, int, int]:
     """
     Read one batch from the queue, classify each template, store results.
@@ -82,14 +100,16 @@ def process_batch() -> tuple[int, int, int, int]:
     for item, result, confidence in rule_items:
         template_hash = item["template_hash"]
         template_text = item["template_text"]
-        db.cache_set(template_hash, template_text, result, "rule", confidence)
-        db.audit_log(template_hash, template_text, result, "rule", confidence)
-        write_result_log(template_hash, template_text, result, "rule", confidence)
-        db.request_complete_by_template_hash(template_hash, result, "rule", confidence)
+        # Extract detected entity for rule-based decisions
+        detected_entity, entity_label, entity_score = _extract_rule_entity(template_text)
+        db.cache_set(template_hash, template_text, result, "rule", confidence, detected_entity, entity_label, entity_score)
+        db.audit_log(template_hash, template_text, result, "rule", confidence, detected_entity, entity_label, entity_score)
+        write_result_log(template_hash, template_text, result, "rule", confidence, detected_entity, entity_label, entity_score)
+        db.request_complete_by_template_hash(template_hash, result, "rule", confidence, detected_entity, entity_label, entity_score)
         db.queue_registry_remove(template_hash)
         logger.info(
-            "Rule decision  hash=%s  result=%s  confidence=%s",
-            template_hash, result, confidence,
+            "Rule decision  hash=%s  result=%s  confidence=%s  entity=%s",
+            template_hash, result, confidence, detected_entity,
         )
         rule_count += 1
 
@@ -105,17 +125,17 @@ def process_batch() -> tuple[int, int, int, int]:
             queue_manager.rollback_batch()
             return WORKER_BATCH_SIZE, 0, rule_count, 0
 
-        for item, (result, confidence) in zip(model_items, model_results):
+        for item, (result, confidence, detected_entity, entity_label, entity_score) in zip(model_items, model_results):
             template_hash = item["template_hash"]
             template_text = item["template_text"]
-            db.cache_set(template_hash, template_text, result, "model", confidence)
-            db.audit_log(template_hash, template_text, result, "model", confidence)
-            write_result_log(template_hash, template_text, result, "model", confidence)
-            db.request_complete_by_template_hash(template_hash, result, "model", confidence)
+            db.cache_set(template_hash, template_text, result, "model", confidence, detected_entity, entity_label, entity_score)
+            db.audit_log(template_hash, template_text, result, "model", confidence, detected_entity, entity_label, entity_score)
+            write_result_log(template_hash, template_text, result, "model", confidence, detected_entity, entity_label, entity_score)
+            db.request_complete_by_template_hash(template_hash, result, "model", confidence, detected_entity, entity_label, entity_score)
             db.queue_registry_remove(template_hash)
             logger.info(
-                "Model decision  hash=%s  result=%s  confidence=%s",
-                template_hash, result, confidence,
+                "Model decision  hash=%s  result=%s  confidence=%s  entity=%s",
+                template_hash, result, confidence, detected_entity,
             )
             model_count += 1
 

@@ -35,6 +35,27 @@ TRANSACTIONAL_HINTS = {
 }
 
 
+def _extract_rule_entity(template_text: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """
+    Try to extract a sender-like entity from template_text for rule-based decisions.
+    Returns (entity, label, score) or (None, None, None).
+    """
+    import re
+    patterns = [
+        r'for\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+OTP',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+Platform',
+        r'([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+OTP',  # "Proiojon OTP"
+        r'([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+Platform',  # "Proiojon Platform"
+        r'for\s+([A-Za-z][A-Za-z0-9]+(?:\s+[A-Za-z][A-Za-z0-9]+)*)',  # "for Proiojon" (lowercase allowed)
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, template_text)
+        if match:
+            return match.group(1), "ORG", 0.75
+    return None, None, None
+
+
 def load_model() -> bool:
     """
     Load the NER pipeline.
@@ -86,7 +107,7 @@ def model_error() -> Optional[str]:
 # Inference
 # ---------------------------------------------------------------------------
 
-ClassifyResult = tuple[str, Optional[float]]  # (result, confidence)
+ClassifyResult = tuple[str, Optional[float], Optional[str], Optional[str], Optional[float]]  # (result, confidence, entity, label, score)
 
 
 def _looks_transactional(template_text: str) -> bool:
@@ -94,9 +115,12 @@ def _looks_transactional(template_text: str) -> bool:
     return any(hint in lowered for hint in TRANSACTIONAL_HINTS)
 
 
-def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float]:
+ClassifyResult = tuple[str, Optional[float], Optional[str], Optional[str], Optional[float]]  # (result, confidence, entity, label, score)
+
+
+def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float, str, str, float]:
     """
-    Return (is_sender_signal, score) for one aggregated NER entity.
+    Return (is_sender_signal, score, entity, label, score) for one aggregated NER entity.
 
     We only accept strong ORG entities as sender identity signals.
     Valid sender-like patterns are:
@@ -118,11 +142,11 @@ def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float
     word = str(ent.get("word", "")).strip()
 
     if label not in SENDER_ENTITY_LABELS:
-        return False, 0.0
+        return False, 0.0, "", "", 0.0
     if score < ORG_SCORE_THRESHOLD:
-        return False, 0.0
+        return False, 0.0, "", "", 0.0
     if len(word) < MIN_ENTITY_LENGTH:
-        return False, 0.0
+        return False, 0.0, "", "", 0.0
 
     start = int(ent.get("start", -1))
     end = int(ent.get("end", -1))
@@ -141,7 +165,7 @@ def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float
             start,
             end,
         )
-        return True, score
+        return True, score, word, label, score
 
     if near_start and transactional:
         logger.debug(
@@ -152,7 +176,7 @@ def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float
             start,
             end,
         )
-        return True, score
+        return True, score, word, label, score
 
     logger.debug(
         "Ignoring ORG entity without sender context: label=%s word=%r score=%.3f start=%s end=%s transactional=%s",
@@ -163,21 +187,25 @@ def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float
         end,
         transactional,
     )
-    return False, 0.0
+    return False, 0.0, "", "", 0.0
 
 
 def _decide_from_entities(template_text: str, entities: list[dict]) -> ClassifyResult:
     best_score = 0.0
+    best_entity = ""
+    best_label = ""
 
     for ent in entities:
-        is_signal, score = _entity_is_sender_signal(ent, template_text)
+        is_signal, score, entity, label, _ = _entity_is_sender_signal(ent, template_text)
         if is_signal and score > best_score:
             best_score = score
+            best_entity = entity
+            best_label = label
 
     if best_score > 0:
-        return "PASS", round(best_score, 4)
+        return "PASS", round(best_score, 4), best_entity, best_label, round(best_score, 4)
 
-    return "FLAG", None
+    return "FLAG", None, None, None, None
 
 
 def classify(template_text: str) -> ClassifyResult:

@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS template_cache (
     result         TEXT NOT NULL,          -- PASS | FLAG
     confidence     REAL,                   -- NULL if unavailable
     source         TEXT NOT NULL,          -- rule | model
+    detected_entity TEXT,
+    entity_label   TEXT,
+    entity_score   REAL,
     created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -63,6 +66,9 @@ CREATE TABLE IF NOT EXISTS classification_audit (
     result         TEXT NOT NULL,
     confidence     REAL,
     source         TEXT NOT NULL,
+    detected_entity TEXT,
+    entity_label   TEXT,
+    entity_score   REAL,
     processed_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -75,6 +81,9 @@ CREATE TABLE IF NOT EXISTS request_tracking (
     result         TEXT,
     confidence     REAL,
     source         TEXT,
+    detected_entity TEXT,
+    entity_label   TEXT,
+    entity_score   REAL,
     created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
     completed_at   DATETIME,
     expires_at     DATETIME NOT NULL
@@ -87,7 +96,35 @@ def init_db() -> None:
     ensure_directories()
     with db_cursor() as cur:
         cur.executescript(SCHEMA_SQL)
+        _add_missing_columns(cur)
     logger.info("Database initialized at %s", DB_PATH)
+
+
+def _add_missing_columns(cur) -> None:
+    """Add missing columns to existing tables for schema compatibility."""
+    # Add detected_entity, entity_label, entity_score to request_tracking if missing
+    cur.execute("PRAGMA table_info(request_tracking)")
+    columns = {row[1] for row in cur.fetchall()}
+    for col in ["detected_entity", "entity_label", "entity_score"]:
+        if col not in columns:
+            cur.execute(f"ALTER TABLE request_tracking ADD COLUMN {col}")
+            logger.info("Added missing column %s to request_tracking", col)
+
+    # Add detected_entity, entity_label, entity_score to template_cache if missing
+    cur.execute("PRAGMA table_info(template_cache)")
+    columns = {row[1] for row in cur.fetchall()}
+    for col in ["detected_entity", "entity_label", "entity_score"]:
+        if col not in columns:
+            cur.execute(f"ALTER TABLE template_cache ADD COLUMN {col}")
+            logger.info("Added missing column %s to template_cache", col)
+
+    # Add detected_entity, entity_label, entity_score to classification_audit if missing
+    cur.execute("PRAGMA table_info(classification_audit)")
+    columns = {row[1] for row in cur.fetchall()}
+    for col in ["detected_entity", "entity_label", "entity_score"]:
+        if col not in columns:
+            cur.execute(f"ALTER TABLE classification_audit ADD COLUMN {col}")
+            logger.info("Added missing column %s to classification_audit", col)
 
 
 # ---------------------------------------------------------------------------
@@ -111,28 +148,35 @@ def cache_set(
     result: str,
     source: str,
     confidence: float | None = None,
+    detected_entity: str | None = None,
+    entity_label: str | None = None,
+    entity_score: float | None = None,
 ) -> None:
     """Insert or replace a cache entry."""
     with db_cursor() as cur:
         cur.execute(
             """
             INSERT INTO template_cache
-                (template_hash, template_text, result, confidence, source, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (template_hash, template_text, result, confidence, source, detected_entity, entity_label, entity_score, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(template_hash) DO UPDATE SET
-                result      = excluded.result,
-                confidence  = excluded.confidence,
-                source      = excluded.source,
-                updated_at  = CURRENT_TIMESTAMP
+                result        = excluded.result,
+                confidence    = excluded.confidence,
+                source        = excluded.source,
+                detected_entity = excluded.detected_entity,
+                entity_label  = excluded.entity_label,
+                entity_score  = excluded.entity_score,
+                updated_at    = CURRENT_TIMESTAMP
             """,
-            (template_hash, template_text, result, confidence, source),
+            (template_hash, template_text, result, confidence, source, detected_entity, entity_label, entity_score),
         )
     logger.info(
-        "Cache write  hash=%s  result=%s  source=%s  confidence=%s",
+        "Cache write  hash=%s  result=%s  source=%s  confidence=%s  entity=%s",
         template_hash,
         result,
         source,
         confidence,
+        detected_entity,
     )
 
 
@@ -214,16 +258,19 @@ def audit_log(
     result: str,
     source: str,
     confidence: float | None = None,
+    detected_entity: str | None = None,
+    entity_label: str | None = None,
+    entity_score: float | None = None,
 ) -> None:
     """Write an entry to the classification_audit table."""
     with db_cursor() as cur:
         cur.execute(
             """
             INSERT INTO classification_audit
-                (template_hash, template_text, result, confidence, source)
-            VALUES (?, ?, ?, ?, ?)
+                (template_hash, template_text, result, confidence, source, detected_entity, entity_label, entity_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (template_hash, template_text, result, confidence, source),
+            (template_hash, template_text, result, confidence, source, detected_entity, entity_label, entity_score),
         )
 
 
@@ -270,6 +317,9 @@ def request_complete(
     result: str,
     source: str,
     confidence: float | None = None,
+    detected_entity: str | None = None,
+    entity_label: str | None = None,
+    entity_score: float | None = None,
 ) -> None:
     with db_cursor() as cur:
         cur.execute(
@@ -279,10 +329,13 @@ def request_complete(
                 result = ?,
                 source = ?,
                 confidence = ?,
+                detected_entity = ?,
+                entity_label = ?,
+                entity_score = ?,
                 completed_at = CURRENT_TIMESTAMP
             WHERE request_id = ?
             """,
-            (result, source, confidence, request_id),
+            (result, source, confidence, detected_entity, entity_label, entity_score, request_id),
         )
 
 
@@ -291,6 +344,9 @@ def request_complete_by_template_hash(
     result: str,
     source: str,
     confidence: float | None = None,
+    detected_entity: str | None = None,
+    entity_label: str | None = None,
+    entity_score: float | None = None,
 ) -> None:
     with db_cursor() as cur:
         cur.execute(
@@ -300,10 +356,13 @@ def request_complete_by_template_hash(
                 result = ?,
                 source = ?,
                 confidence = ?,
+                detected_entity = ?,
+                entity_label = ?,
+                entity_score = ?,
                 completed_at = CURRENT_TIMESTAMP
             WHERE template_hash = ? AND status != 'completed'
             """,
-            (result, source, confidence, template_hash),
+            (result, source, confidence, detected_entity, entity_label, entity_score, template_hash),
         )
 
 

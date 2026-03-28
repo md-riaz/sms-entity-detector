@@ -24,6 +24,9 @@ def write_result_log(
     result: str,
     source: str,
     confidence: Optional[float] = None,
+    detected_entity: Optional[str] = None,
+    entity_label: Optional[str] = None,
+    entity_score: Optional[float] = None,
 ) -> None:
     """Append a classification result entry to the JSONL results log."""
     _ensure_log_dir()
@@ -33,6 +36,9 @@ def write_result_log(
         "result": result,
         "source": source,
         "confidence": confidence,
+        "detected_entity": detected_entity,
+        "entity_label": entity_label,
+        "entity_score": entity_score,
         "logged_at": datetime.now(timezone.utc).isoformat(),
     }
     try:

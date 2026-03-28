@@ -49,6 +49,9 @@ class RequestStatusResponse(BaseModel):
     result: Optional[str] = None
     confidence: Optional[float] = None
     source: Optional[str] = None
+    detected_entity: Optional[str] = None
+    entity_label: Optional[str] = None
+    entity_score: Optional[float] = None
     created_at: str
     completed_at: Optional[str] = None
     expires_at: str
@@ -62,6 +65,9 @@ class MessageResult(BaseModel):
     result: Optional[str] = None         # "PASS" | "FLAG" – only when cached
     confidence: Optional[float] = None
     source: Optional[str] = None         # "rule" | "model" – only when cached
+    detected_entity: Optional[str] = None
+    entity_label: Optional[str] = None
+    entity_score: Optional[float] = None
 
 
 class IngestResponse(BaseModel):

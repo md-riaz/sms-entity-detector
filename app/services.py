@@ -39,6 +39,9 @@ def _process_single_message(raw_text: str) -> MessageResult:
             result=cached["result"],
             confidence=cached["confidence"],
             source=cached["source"],
+            detected_entity=cached.get("detected_entity"),
+            entity_label=cached.get("entity_label"),
+            entity_score=cached.get("entity_score"),
         )
 
     # 2. Cache miss – try to enqueue (duplicate-safe via DB registry)
@@ -85,6 +88,9 @@ def check_sms(raw_text: str) -> CheckSubmitResponse:
             cached["result"],
             cached["source"],
             cached["confidence"],
+            cached.get("detected_entity"),
+            cached.get("entity_label"),
+            cached.get("entity_score"),
         )
         request = db.request_get(request["request_id"])
         assert request is not None
@@ -130,6 +136,9 @@ def get_request_status(request_id: str) -> RequestStatusResponse | None:
         result=request["result"],
         confidence=request["confidence"],
         source=request["source"],
+        detected_entity=request.get("detected_entity"),
+        entity_label=request.get("entity_label"),
+        entity_score=request.get("entity_score"),
         created_at=request["created_at"],
         completed_at=request["completed_at"],
         expires_at=request["expires_at"],
@@ -143,11 +152,11 @@ def get_request_status(request_id: str) -> RequestStatusResponse | None:
 def classify_template(
     template_hash: str,
     template_text: str,
-) -> tuple[str, Optional[float], str]:
+) -> tuple[str, Optional[float], str, Optional[str], Optional[str], Optional[float]]:
     """
     Classify a single template through rules → model pipeline.
 
-    Returns (result, confidence, source).
+    Returns (result, confidence, source, detected_entity, entity_label, entity_score).
     Writes to cache and audit log.
     """
     # Rule layer first
@@ -155,30 +164,53 @@ def classify_template(
 
     if result is not None:
         source = "rule"
+        # For rule-based, try to extract sender-like entity from text
+        detected_entity, entity_label, entity_score = _extract_rule_entity(template_text)
         logger.info(
-            "Rule decision  hash=%s  result=%s  confidence=%s",
+            "Rule decision  hash=%s  result=%s  confidence=%s  entity=%s",
             template_hash,
             result,
             confidence,
+            detected_entity,
         )
     else:
         # Fall through to ML model
-        result, confidence = classifier.classify(template_text)
+        result, confidence, detected_entity, entity_label, entity_score = classifier.classify(template_text)
         source = "model"
         logger.info(
-            "Model decision  hash=%s  result=%s  confidence=%s",
+            "Model decision  hash=%s  result=%s  confidence=%s  entity=%s",
             template_hash,
             result,
             confidence,
+            detected_entity,
         )
 
     # Persist to cache
-    db.cache_set(template_hash, template_text, result, source, confidence)
+    db.cache_set(template_hash, template_text, result, source, confidence, detected_entity, entity_label, entity_score)
 
     # Audit DB
     db.audit_log(template_hash, template_text, result, source, confidence)
 
     # Audit JSONL log
-    write_result_log(template_hash, template_text, result, source, confidence)
+    write_result_log(template_hash, template_text, result, source, confidence, detected_entity, entity_label, entity_score)
 
-    return result, confidence, source
+    return result, confidence, source, detected_entity, entity_label, entity_score
+
+
+def _extract_rule_entity(template_text: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """
+    Try to extract a sender-like entity from template_text for rule-based decisions.
+    Returns (entity, label, score) or (None, None, None).
+    """
+    # Look for common patterns like "for <Brand>", "<Brand> OTP", etc.
+    import re
+    patterns = [
+        r'for\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+OTP',
+        r'^([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*)\s+Platform',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, template_text)
+        if match:
+            return match.group(1), "ORG", 0.75
+    return None, None, None
