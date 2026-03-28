@@ -35,13 +35,19 @@ API_PORT = int(os.getenv("API_PORT", "8117"))
 NER_MODEL_NAME = os.getenv("NER_MODEL_NAME", "Davlan/xlm-roberta-base-ner-hrl")
 # Set to "false" to disable model loading (useful for tests / lightweight mode)
 MODEL_ENABLED = os.getenv("MODEL_ENABLED", "true").lower() == "true"
-# NER entity labels considered as ORG / sender identity signals
-ORG_LABELS = {"ORG", "PER", "LOC"}  # xlm-roberta-base-ner-hrl uses B-ORG / I-ORG
+# Only organization-like entities should count as sender identity signals.
+# We intentionally do NOT treat PER/LOC as sender proof because location mentions
+# in political/event messages cause false PASS results.
+SENDER_ENTITY_LABELS = {"ORG"}
 ORG_SCORE_THRESHOLD = float(os.getenv("ORG_SCORE_THRESHOLD", "0.80"))
 
 # Minimum token length to be treated as a meaningful entity name (guards against
 # very short false-positive NER hits like "I" or single-digit tokens)
 MIN_ENTITY_LENGTH = int(os.getenv("MIN_ENTITY_LENGTH", "3"))
+
+# Prefer ORG entities that appear like sender signatures near the beginning or
+# end of the SMS body.
+SIGNATURE_EDGE_WINDOW = int(os.getenv("SIGNATURE_EDGE_WINDOW", "24"))
 
 # Temporary request-tracking records are kept for a short time so clients can
 # poll for results after async processing completes.

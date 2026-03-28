@@ -20,6 +20,20 @@ _pipeline = None
 _model_loaded: bool = False
 _model_error: Optional[str] = None
 
+# Transactional keywords that strongly suggest an app/service sender context.
+TRANSACTIONAL_HINTS = {
+    'otp',
+    'security code',
+    'verification code',
+    'verify',
+    'account',
+    'login',
+    'password',
+    'pin',
+    'platform',
+    'code',
+}
+
 
 def load_model() -> bool:
     """
@@ -75,13 +89,104 @@ def model_error() -> Optional[str]:
 ClassifyResult = tuple[str, Optional[float]]  # (result, confidence)
 
 
+def _looks_transactional(template_text: str) -> bool:
+    lowered = template_text.lower()
+    return any(hint in lowered for hint in TRANSACTIONAL_HINTS)
+
+
+def _entity_is_sender_signal(ent: dict, template_text: str) -> tuple[bool, float]:
+    """
+    Return (is_sender_signal, score) for one aggregated NER entity.
+
+    We only accept strong ORG entities as sender identity signals.
+    Valid sender-like patterns are:
+    - ORG near the end of the SMS (signature-like footer)
+    - ORG near the beginning of a transactional/security/account message
+
+    This avoids false PASS results caused by location mentions inside content,
+    while still allowing app names in OTP/security-code messages.
+    """
+    from app.config import (
+        MIN_ENTITY_LENGTH,
+        ORG_SCORE_THRESHOLD,
+        SENDER_ENTITY_LABELS,
+        SIGNATURE_EDGE_WINDOW,
+    )
+
+    label = ent.get("entity_group", "")
+    score = float(ent.get("score", 0.0))
+    word = str(ent.get("word", "")).strip()
+
+    if label not in SENDER_ENTITY_LABELS:
+        return False, 0.0
+    if score < ORG_SCORE_THRESHOLD:
+        return False, 0.0
+    if len(word) < MIN_ENTITY_LENGTH:
+        return False, 0.0
+
+    start = int(ent.get("start", -1))
+    end = int(ent.get("end", -1))
+    text_len = len(template_text)
+
+    near_start = start >= 0 and start <= SIGNATURE_EDGE_WINDOW
+    near_end = end >= 0 and (text_len - end) <= SIGNATURE_EDGE_WINDOW
+    transactional = _looks_transactional(template_text)
+
+    if near_end:
+        logger.debug(
+            "Sender footer ORG entity: label=%s word=%r score=%.3f start=%s end=%s",
+            label,
+            word,
+            score,
+            start,
+            end,
+        )
+        return True, score
+
+    if near_start and transactional:
+        logger.debug(
+            "Sender header ORG entity in transactional SMS: label=%s word=%r score=%.3f start=%s end=%s",
+            label,
+            word,
+            score,
+            start,
+            end,
+        )
+        return True, score
+
+    logger.debug(
+        "Ignoring ORG entity without sender context: label=%s word=%r score=%.3f start=%s end=%s transactional=%s",
+        label,
+        word,
+        score,
+        start,
+        end,
+        transactional,
+    )
+    return False, 0.0
+
+
+def _decide_from_entities(template_text: str, entities: list[dict]) -> ClassifyResult:
+    best_score = 0.0
+
+    for ent in entities:
+        is_signal, score = _entity_is_sender_signal(ent, template_text)
+        if is_signal and score > best_score:
+            best_score = score
+
+    if best_score > 0:
+        return "PASS", round(best_score, 4)
+
+    return "FLAG", None
+
+
 def classify(template_text: str) -> ClassifyResult:
     """
     Run NER inference on *template_text*.
 
     Returns:
-        ("PASS", confidence) if an ORG/PER/LOC entity with high confidence
-            is detected (signals sender identity).
+        ("PASS", confidence) only when a strong ORG entity looks like a sender
+            signature/footer or a sender header in a transactional message.
         ("FLAG", confidence) otherwise.
         ("FLAG", None) if the model is not available.
     """
@@ -93,37 +198,13 @@ def classify(template_text: str) -> ClassifyResult:
             )
             return "FLAG", None
 
-    from app.config import MIN_ENTITY_LENGTH, ORG_LABELS, ORG_SCORE_THRESHOLD
-
     try:
         entities = _pipeline(template_text)  # type: ignore[misc]
     except Exception as exc:
         logger.error("NER inference failed: %s", exc)
         return "FLAG", None
 
-    best_score: float = 0.0
-
-    for ent in entities:
-        label: str = ent.get("entity_group", "")
-        score: float = float(ent.get("score", 0.0))
-        word: str = ent.get("word", "")
-
-        if (
-            label in ORG_LABELS
-            and score >= ORG_SCORE_THRESHOLD
-            and len(word.strip()) >= MIN_ENTITY_LENGTH
-        ):
-            if score > best_score:
-                best_score = score
-            logger.debug(
-                "NER entity: label=%s word=%r score=%.3f", label, word, score
-            )
-
-    if best_score >= ORG_SCORE_THRESHOLD:
-        return "PASS", round(best_score, 4)
-
-    # No strong org/entity signal
-    return "FLAG", round(1.0 - best_score, 4) if best_score > 0 else None
+    return _decide_from_entities(template_text, entities)
 
 
 def classify_batch(templates: list[str]) -> list[ClassifyResult]:
@@ -137,8 +218,6 @@ def classify_batch(templates: list[str]) -> list[ClassifyResult]:
     if not _model_loaded:
         load_model()
 
-    from app.config import MIN_ENTITY_LENGTH, ORG_LABELS, ORG_SCORE_THRESHOLD
-
     results: list[ClassifyResult] = []
 
     if not _model_loaded or _pipeline is None:
@@ -146,25 +225,8 @@ def classify_batch(templates: list[str]) -> list[ClassifyResult]:
 
     try:
         batch_entities = _pipeline(templates)  # type: ignore[misc]
-        for ent_list in batch_entities:
-            best_score: float = 0.0
-            for ent in ent_list:
-                label = ent.get("entity_group", "")
-                score = float(ent.get("score", 0.0))
-                word = ent.get("word", "")
-                if (
-                    label in ORG_LABELS
-                    and score >= ORG_SCORE_THRESHOLD
-                    and len(word.strip()) >= MIN_ENTITY_LENGTH
-                ):
-                    if score > best_score:
-                        best_score = score
-            if best_score >= ORG_SCORE_THRESHOLD:
-                results.append(("PASS", round(best_score, 4)))
-            else:
-                results.append(
-                    ("FLAG", round(1.0 - best_score, 4) if best_score > 0 else None)
-                )
+        for template_text, ent_list in zip(templates, batch_entities):
+            results.append(_decide_from_entities(template_text, ent_list))
     except Exception as exc:
         logger.error("Batch NER inference failed: %s – falling back to per-item", exc)
         results = [classify(t) for t in templates]
