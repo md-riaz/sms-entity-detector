@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Body
-from fastapi.responses import JSONResponse
 
 from app import classifier, db, queue_manager, services, stats
 from app.config import APP_LOG_FILE, LOG_DIR, ensure_directories
 from app.schemas import (
     CacheRecord,
+    CheckRequest,
     HealthResponse,
     IngestRequest,
     IngestResponse,
@@ -119,17 +119,16 @@ def ingest(request: IngestRequest):
 
 
 @app.post("/api/v1/sms/check", response_model=MessageResult)
-def check(body: dict = Body(...)):
+def check(body: CheckRequest = Body(...)):
     """
     Check a single SMS message for sender identity.
     Returns cached result if available, otherwise queues and returns PENDING.
 
     Body: { "message": "<raw sms text>" }
     """
-    message = body.get("message", "")
-    if not message:
+    if not body.message:
         raise HTTPException(status_code=422, detail="Field 'message' is required")
-    return services.check_sms(message)
+    return services.check_sms(body.message)
 
 
 @app.get("/api/v1/template/{template_hash}", response_model=CacheRecord)

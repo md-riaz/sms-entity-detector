@@ -11,7 +11,26 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 class IngestRequest(BaseModel):
-    messages: list[str] = Field(..., min_length=1, description="One or more raw SMS texts")
+    messages: list[str] = Field(
+        ...,
+        min_length=1,
+        description="One or more raw SMS texts",
+        examples=[
+            [
+                "Your OTP is 123456",
+                "bKash OTP is 123456",
+                "Daraz: Order confirmed",
+            ]
+        ],
+    )
+
+
+class CheckRequest(BaseModel):
+    message: str = Field(
+        ...,
+        description="One raw SMS text",
+        examples=["bKash OTP is 123456"],
+    )
 
 
 class MessageResult(BaseModel):

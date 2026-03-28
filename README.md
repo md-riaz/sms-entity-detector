@@ -127,7 +127,7 @@ With template normalization + SHA-1 caching:
 ### Prerequisites
 
 - Python 3.11+
-- ~2 GB disk space for the ML model (downloaded automatically on first run)
+- ~2 GB disk space for the ML model cache
 
 ### Setup
 
@@ -136,8 +136,11 @@ With template normalization + SHA-1 caching:
 python3.11 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install CPU-only PyTorch first (recommended for local/dev on non-GPU hosts)
+pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.6.0+cpu
+
+# Install the remaining dependencies without replacing torch
+pip install -r requirements.txt --no-deps
 
 # Copy environment config
 cp .env.example .env
@@ -153,6 +156,26 @@ The API will be available at `http://localhost:8117`.
 ```bash
 source .venv/bin/activate
 python -m worker.run_worker
+```
+
+### Lazy model loading
+
+The API and worker now start without preloading the HuggingFace model.
+The model is loaded lazily only when a template falls through the rule engine
+and requires ML inference.
+
+This means:
+- API startup is fast
+- worker startup is fast
+- the first truly ambiguous SMS may still take longer while the model loads
+
+### Optional: warm the model cache manually
+
+If you want to preload the model after setup so the first ambiguous SMS is faster:
+
+```bash
+source .venv/bin/activate
+python -m app.preload_model
 ```
 
 ---
@@ -420,6 +443,13 @@ Runs continuously, polling the queue every `WORKER_SLEEP_SECONDS`.
 python -m worker.run_worker --once
 ```
 Processes one batch and exits. Useful in CI or for debugging.
+
+### Manual model warm-up
+```bash
+python -m app.preload_model
+```
+Downloads/loads the configured HuggingFace model into the local cache ahead of time.
+Useful for local setups where you want the first ML fallback to be fast.
 
 ### Via API (development)
 ```bash
